@@ -223,7 +223,7 @@
 
 # Handout – The Full Machine Learning Lifecycle – How to use Machine Learning in Production (MLOps)
 
-Welcome to our Workshop about Machine Learning in Production. For this workshop we prepared an environment containing a Virtual Machine and several pre-installed and configured tools (Python, Airflow, MLflow, several machine learning libraries). In the first stage of the Workshop you will complete the pipeline and fix small problems to make it work. In the second part you can implement additional features of the ML Pipeline.
+Welcome to our tutorial about Machine Learning in Production. We provide three separate hands-on exercises. Through the first two exercises, you will be guided with a Jupyter notebook. For the third exercise, there is a series of tasks for you to complete on your own.
 
 --- 
 
