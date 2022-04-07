@@ -12,7 +12,7 @@ The built pipeline uses:
 ## How to work with this repo
 1. Clone the repository to your machine
    ```
-   git@github.com:d-one/cd4ml-workshop.git
+   git@github.com:d-one/d-one-mlops.git
    ```
  
 2. Install Docker
