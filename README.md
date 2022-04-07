@@ -1,6 +1,12 @@
-# MLOps
+# D ONE MLOps
 
-Full Maching Learning Lifecycle using open source technologies
+Full Maching Learning Lifecycle using open source technologies. This repository offers a fully functioning end-to-end MLOps training pipeline that runs with Docker Compose. The goal is to (1) provide you with a MLOps training tool and (2) give you a head start when building your production machine learning (“ML”) pipeline for your own project.
+
+The built pipeline uses:
+- DVC to track data
+- MLflow to track experiments and register models
+- Apache Airflow to orchestrate the MLOps pipeline
+- Docker
 
 
 ## How to work with this repo
@@ -44,15 +50,18 @@ Please find the requirements of airflow environment [here](dockerfiles/airflow/r
 
 
 ## Cleanup
-Run the following to stop all running docker containers
+Run the following to stop all running docker containers through docker compose
+```
+docker-compose stop
+```
+or run the following to stop and delete all running docker containers through docker
 ```
 docker stop $(docker ps -q)
 ```
-Run the following to delete all (stoped) docker containers
 ```
 docker rm $(docker ps -aq)
 ```
-Run the following to delete all (named) volumes
+Finally run the following to delete all (named) volumes
 ```
 docker volume rm $(docker volume ls -q)
 ```

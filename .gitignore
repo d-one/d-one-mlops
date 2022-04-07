@@ -136,7 +136,9 @@ data_config.json
 
 # Docker Volumes
 data/*
-!data/day0
+!data/batch0
+!data/batch1
+!data/batch2
 logs/*
 postgres/*
 mlflow-data/*
