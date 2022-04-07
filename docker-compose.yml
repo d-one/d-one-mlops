@@ -1,0 +1,373 @@
+# Author:      CD4ML Working Group @ D ONE
+# Description: Script that defines and creates the necessary docker containers for the MLOps pipeline
+# ================================================================================
+
+# Docker version 20.10.13
+# docker-compose version 1.29.2
+
+version: '3'
+
+x-airflow-common:
+  &airflow-common
+  # In order to use the following configuration in different containers, we used here the YAML
+  # syntax. See https://stackoverflow.com/questions/41063361/what-is-the-double-left-arrow-syntax-in-yaml-called-and-wheres-it-specced
+  # for more information.
+
+  # Sets the name of the image and defaults to "airflow" if the env variable $AIRFLOW_IMAGE_NAME is not set.
+  image: ${AIRFLOW_IMAGE_NAME:-airflow}
+
+  # Builds the image from the Dockerfile ./dockerfiles/airflow/Dockerfile. If you change something in there you have to run
+  # docker-compose build befeore you can use the image in docker-compose up again. 
+  build: ./dockerfiles/airflow
+  environment:
+    &airflow-common-env
+    # Sets multiple environment variables for airflow. Have a look in here for further explanations:
+    # https://airflow.apache.org/docs/apache-airflow/stable/start/docker.html
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres-airflow/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
+    AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    AIRFLOW_HOME: /opt/airflow
+    PYTHONPATH: "$$PYTHONPATH:/opt/airflow/plugins"
+
+    # Sets the tracking uri env variable for mlflow in all airflow containers
+    MLFLOW_TRACKING_URI: "http://mlflow-webserver:5000"
+    GIT_PYTHON_REFRESH: "quiet"
+  volumes:
+    # Mounts the dags folder
+    - ./dags:/opt/airflow/dags
+    
+    # Mounts the logs folder
+    - ./logs:/opt/airflow/logs
+
+    # Mounts the plugins folder. This is needed for any custom python modules used by airflow DAGs.
+    - ./plugins:/opt/airflow/plugins
+
+    # Mounts the data folder to /data
+    - ./data:/data
+
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    redis:
+      condition: service_healthy
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+
+  # This container runs the postgresql database for mlflow.
+  postgres-mlflow:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow
+      POSTGRES_DB: mlflow
+    volumes:
+      # The data folder is a named volume mounted to /var/lib/postgresql/data
+      - postgres-db-volume-mlflow:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "mlflow"]
+      interval: 5s
+      retries: 5
+    restart: always
+
+  # This container runs the artifact storage as an S3 server.
+  s3-artifact-storage:
+    # The base image is minio which is a minimalistic S3 server.
+    image: minio/minio
+    volumes:
+      # We want to serve the content from the named volume "mlflow-data" through the S3 server
+      # All artifacts will be stored in this volume.
+      - mlflow-data:/data
+    environment:
+      &env-mlflow-s3
+      # The following credentials are for both login (through localhost:9001) and access to the S3 server (localhost:9000).
+      MINIO_ROOT_USER: mlflow_access
+      MINIO_ROOT_PASSWORD: mlflow_secret
+
+    # Launches the S3 server on port 9000 and the login server on port 9001.
+    command: server /data --console-address ":9001"
+    ports:
+      - 9000:9000
+      - 9001:9001
+    healthcheck:
+      test: ["CMD", "curl -I http://localhost:9000/minio/health/live"]
+      interval: 5s
+      retries: 5
+    restart: always
+
+  # This container creates the "data" in the S3 server, in which mlflow will later store the artifacts.
+  mlflow-init:
+    image: minio/mc
+    depends_on:
+      - s3-artifact-storage
+    environment:
+      <<: *env-mlflow-s3
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc config host add myminio http://s3-artifact-storage:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+      /usr/bin/mc mb myminio/data;
+      /usr/bin/mc policy download myminio/data;
+      exit 0;
+      "
+
+  # This container runs the webserver for mlflow.
+  mlflow-webserver:
+    build: ./dockerfiles/mlflow
+    image: mlflow_server
+    ports:
+      - 5000:5000
+    environment:
+      # The following credentials allow connection to the S3 server.
+      MLFLOW_S3_ENDPOINT_URL: http://s3-artifact-storage:9000
+      MLFLOW_S3_IGNORE_TLS: "true"
+      AWS_ACCESS_KEY_ID: "mlflow_access"
+      AWS_SECRET_ACCESS_KEY: "mlflow_secret"
+    
+    # The following command will launch the mlflow webserver on port 5000, with postgresql as the database and S3 as the artifact storage.
+    # The option "--serve-artifacts" will enable the serving of artifacts through mlflow as a proxy to the S3 server.
+    command: mlflow server --backend-store-uri postgresql://mlflow:mlflow@postgres-mlflow/mlflow --artifacts-destination s3://data -h 0.0.0.0 -p 5000 --serve-artifacts
+    depends_on:
+      - postgres-mlflow
+      - s3-artifact-storage
+      - mlflow-init
+
+  # This container runs the postgresql server for airflow.
+  postgres-airflow:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      # The data folder is a named volume mounted to /var/lib/postgresql/data
+      - postgres-db-volume-airflow:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: always
+
+  # The redis - broker that forwards messages from scheduler to worker.
+  redis:
+    image: redis:latest
+    expose:
+      - 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 30s
+      retries: 50
+    restart: always
+
+  # The webserver is available at http://localhost:8080
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - 8080:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # The scheduler monitors all tasks and DAGs, then triggers the task instances once their dependencies are complete.
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # The worker that executes the tasks given by the scheduler.
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    environment:
+      <<: *airflow-common-env
+      # Required to handle warm shutdown of the celery workers properly
+      # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
+      DUMB_INIT_SETSID: "0"
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # The initialization service.
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        function ver() {
+          printf "%04d%04d%04d%04d" $${1//./ }
+        }
+        airflow_version=$$(gosu airflow airflow version)
+        airflow_version_comparable=$$(ver $${airflow_version})
+        min_airflow_version=2.2.0
+        min_airflow_version_comparable=$$(ver $${min_airflow_version})
+        if (( airflow_version_comparable < min_airflow_version_comparable )); then
+          echo
+          echo -e "\033[1;31mERROR!!!: Too old Airflow version $${airflow_version}!\e[0m"
+          echo "The minimum Airflow version supported: $${min_airflow_version}. Only use this or higher!"
+          echo
+          exit 1
+        fi
+        if [[ -z "${AIRFLOW_UID}" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
+          echo "If you are on Linux, you SHOULD follow the instructions below to set "
+          echo "AIRFLOW_UID environment variable, otherwise files will be owned by root."
+          echo "For other operating systems you can get rid of the warning with manually created .env file:"
+          echo "    See: https://airflow.apache.org/docs/apache-airflow/stable/start/docker.html#setting-the-right-airflow-user"
+          echo
+        fi
+        one_meg=1048576
+        mem_available=$$(($$(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / one_meg))
+        cpus_available=$$(grep -cE 'cpu[0-9]+' /proc/stat)
+        disk_available=$$(df / | tail -1 | awk '{print $$4}')
+        warning_resources="false"
+        if (( mem_available < 4000 )) ; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough memory available for Docker.\e[0m"
+          echo "At least 4GB of memory required. You have $$(numfmt --to iec $$((mem_available * one_meg)))"
+          echo
+          warning_resources="true"
+        fi
+        if (( cpus_available < 2 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough CPUS available for Docker.\e[0m"
+          echo "At least 2 CPUs recommended. You have $${cpus_available}"
+          echo
+          warning_resources="true"
+        fi
+        if (( disk_available < one_meg * 10 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough Disk space available for Docker.\e[0m"
+          echo "At least 10 GBs recommended. You have $$(numfmt --to iec $$((disk_available * 1024 )))"
+          echo
+          warning_resources="true"
+        fi
+        if [[ $${warning_resources} == "true" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: You have not enough resources to run Airflow (see above)!\e[0m"
+          echo "Please follow the instructions to increase amount of resources available:"
+          echo "   https://airflow.apache.org/docs/apache-airflow/stable/start/docker.html#before-you-begin"
+          echo
+        fi
+        mkdir -p /sources/logs /sources/dags /sources/plugins /sources/mlflow-data
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins,mlflow-data}
+        exec /entrypoint airflow version
+    # yamllint enable rule:line-length
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: "0:0"
+    volumes:
+      - .:/sources
+
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    # Workaround for entrypoint issue. See: https://github.com/apache/airflow/issues/16252
+    command:
+      - bash
+      - -c
+      - airflow
+  
+  # The flower app for monitoring the environment. It is available at http://localhost:5555.
+  flower:
+    <<: *airflow-common
+    command: celery flower
+    ports:
+      - 5555:5555
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # This container runs the jupyter lab.
+  jupyter:
+    image: jupyter_lab
+    # docker-compose build befeore you can use the image in docker-compose up again. 
+    build: ./dockerfiles/jupyter
+    ports:
+      - 8888:8888
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+      JUPYTER_TOKEN: "cd4ml"
+      PYTHONPATH: "$$PYTHONPATH:/opt/airflow/plugins"
+      # Sets the tracking uri env variable for mlflow in jupyter lab
+      MLFLOW_TRACKING_URI: "http://mlflow-webserver:5000"
+      GIT_PYTHON_REFRESH: "quiet"
+    volumes:
+      # Mounts the notebooks folder
+      - ./notebooks:/notebooks
+      # Mounts the plugins folder.
+      - ./plugins:/plugins
+      # Mounts the data folder to /data
+      - ./data:/data
+      # Mounts the data folder to /data
+      - ./:/cd4ml
+
+    entrypoint: sh -c 'jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --notebook-dir=/cd4ml --allow-root'
+
+volumes:
+  postgres-db-volume-airflow:
+  postgres-db-volume-mlflow:
+  mlflow-data:
