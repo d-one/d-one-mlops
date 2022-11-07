@@ -18,6 +18,8 @@ The built pipeline uses:
 2. Install Docker
 
    check https://docs.docker.com/get-docker/ and install according to your OS
+   
+   Make sure that docker Deskop is running before continuing.
 
 3. Run
    ```
@@ -38,7 +40,6 @@ The built pipeline uses:
 
 ## Requirements
 Please find the requirements of airflow environment [here](dockerfiles/airflow/requirements.txt)
-
 
 ## Access
 - http://localhost:8080 airflow, credentials airflow/airflow
@@ -64,4 +65,13 @@ docker rm $(docker ps -aq)
 Finally run the following to delete all (named) volumes
 ```
 docker volume rm $(docker volume ls -q)
+```
+
+## Disclaimer
+
+This repo has been tested on MacOs and Linux with:
+```
+1. Python 3.10.6
+2. Docker version 20.10.10
+3. docker-compose version 1.29.2
 ```
