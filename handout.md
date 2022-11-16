@@ -247,11 +247,20 @@ You have decided not to rely on one of the major cloud providers but to use thre
 
 ---
 ## Agenda
-The workshop is structured into three hands-on parts. During the first two sessions on DVC and MLflow, you will be guided. For the last session on building the full pipeline, there is a series of tasks to complete on your own. (Of course you can reach out to us at any time). 
+The content is structured into three hands-on parts. During the first two sessions on DVC and MLflow, you will be work through the corresponding notebooks. For the last session on building the full pipeline, there is a series of tasks to complete on your own. (Of course you can reach out to us at any time). 
 
 
 ---
-## Tasks
+
+## Part 1: Data versioning with DVC
+For this exercise, access the remote instance of Jupyter Lab and then navigate to /notebooks/ and open the dvc-exercise.ipynb notebook. Work through the notebook to get familiar with DVC.
+
+## Part 2: Experiment and model tracking with MLfow
+For this exercise, access the remote instance of Jupyter Lab and then navigate to /notebooks/ and open the mlflow-exercise.ipynb notebook. Work through the notebook to get familiar with MLflow.
+
+## Part 3: bringing it all together with Airflow
+
+### Tasks
 
 
 #### <span class="tasks">Introduction to Pipelines (get familiar with airflow/pipeline) ★</span>
